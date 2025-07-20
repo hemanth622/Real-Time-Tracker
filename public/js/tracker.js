@@ -48,15 +48,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     const socket = io();
     
     // Initialize map
-    const map = L.map('map').setView([20, 0], 2);
+    const map = L.map('map', {
+        attributionControl: false  // Completely disable attribution control
+    }).setView([20, 0], 2);
     
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: 'Real-Time Location Tracker',
+        attribution: '',  // Remove attribution text
         maxZoom: 19
     }).addTo(map);
     
-    // Add map controls
+    // Add map controls but not attribution
     L.control.scale().addTo(map);
+    
+    // Add CSS to hide any remaining attribution
+    const style = document.createElement('style');
+    style.textContent = `
+        .leaflet-control-attribution {
+            display: none !important;
+        }
+        .leaflet-container a {
+            display: none !important;
+        }
+    `;
+    document.head.appendChild(style);
     
     // Store markers for each user
     const markers = {};
@@ -306,30 +320,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Create custom marker icon
         function createCustomIcon(color, username, isGuest) {
             // Create a custom icon with user's initial and color
-            const initial = username.charAt(0).toUpperCase();
+            const initial = username ? username.charAt(0).toUpperCase() : '?';
             
             return L.divIcon({
                 className: 'custom-marker',
                 html: `
-                    <div style="background-color: ${color}; color: white; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; font-weight: bold; box-shadow: 0 0 5px rgba(0,0,0,0.5);">
+                    <div style="background-color: ${color}; color: white; border-radius: 50%; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-weight: bold; box-shadow: 0 0 5px rgba(0,0,0,0.5);">
                         ${initial}
                     </div>
-                    <div style="background-color: ${color}; width: 10px; height: 10px; transform: rotate(45deg); position: absolute; bottom: -5px; left: 10px; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>
-                    <div style="position: absolute; bottom: -20px; left: 50%; transform: translateX(-50%); white-space: nowrap; background-color: rgba(0,0,0,0.6); color: white; padding: 2px 5px; border-radius: 3px; font-size: 12px;">
-                        ${username}${isGuest ? ' (G)' : ''}
+                    <div style="background-color: ${color}; width: 12px; height: 12px; transform: rotate(45deg); position: absolute; bottom: -6px; left: 12px; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>
+                    <div style="position: absolute; bottom: -25px; left: 50%; transform: translateX(-50%); white-space: nowrap; background-color: rgba(0,0,0,0.8); color: white; padding: 3px 8px; border-radius: 4px; font-size: 13px; font-weight: bold;">
+                        ${username || 'Unknown'}${isGuest ? ' (G)' : ''}
                     </div>
                 `,
-                iconSize: [30, 42],
-                iconAnchor: [15, 42]
+                iconSize: [36, 48],
+                iconAnchor: [18, 48],
+                popupAnchor: [0, -40]
             });
         }
         
-        // Get high accuracy location
+        // Get high accuracy location with better precision for all users
         let locationAttempts = 0;
-        const maxLocationAttempts = 10; // Increase max attempts
+        const maxLocationAttempts = 20; // Increase max attempts for better accuracy
         let locationWatchId;
         let bestPosition = null;
-        
+
         function getHighAccuracyLocation() {
             // Update status
             elements.locationAccuracy.textContent = `Getting precise location (attempt ${locationAttempts + 1}/${maxLocationAttempts})...`;
@@ -339,39 +354,71 @@ document.addEventListener('DOMContentLoaded', async () => {
                 navigator.geolocation.clearWatch(locationWatchId);
             }
             
-            // First try to get a single high-accuracy position
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    // Only use this position if it's better than what we have
-                    if (!bestPosition || position.coords.accuracy < bestPosition.coords.accuracy) {
-                        bestPosition = position;
-                        handlePosition(position);
-                    }
-                    
-                    // Then start watching with high accuracy options
-                    locationWatchId = navigator.geolocation.watchPosition(
-                        (watchPosition) => {
-                            // Only update if this position is more accurate
-                            if (!bestPosition || watchPosition.coords.accuracy < bestPosition.coords.accuracy) {
-                                bestPosition = watchPosition;
-                                handlePosition(watchPosition);
-                            }
-                        },
-                        handlePositionError,
+            // Use a more aggressive approach to get high accuracy
+            const getAccuratePosition = () => {
+                return new Promise((resolve, reject) => {
+                    // Try to get a single high-accuracy position first
+                    navigator.geolocation.getCurrentPosition(
+                        resolve,
+                        reject,
                         {
                             enableHighAccuracy: true,
-                            timeout: 15000,
-                            maximumAge: 0
+                            timeout: 30000, // 30 seconds timeout
+                            maximumAge: 0    // Don't use cached position
                         }
                     );
-                },
-                handlePositionError,
-                {
-                    enableHighAccuracy: true,
-                    timeout: 15000,
-                    maximumAge: 0
+                });
+            };
+            
+            // Try multiple times with different approaches
+            Promise.all([
+                getAccuratePosition().catch(() => null),
+                new Promise(resolve => setTimeout(() => getAccuratePosition().catch(() => null).then(resolve), 1000)),
+                new Promise(resolve => setTimeout(() => getAccuratePosition().catch(() => null).then(resolve), 2000))
+            ])
+            .then(positions => {
+                // Filter out null positions
+                const validPositions = positions.filter(p => p !== null);
+                
+                if (validPositions.length > 0) {
+                    // Find the most accurate position
+                    const mostAccurate = validPositions.reduce((best, current) => {
+                        return (!best || current.coords.accuracy < best.coords.accuracy) ? current : best;
+                    }, null);
+                    
+                    if (!bestPosition || mostAccurate.coords.accuracy < bestPosition.coords.accuracy) {
+                        bestPosition = mostAccurate;
+                        handlePosition(mostAccurate);
+                    }
                 }
-            );
+                
+                // Then start watching with high accuracy options
+                locationWatchId = navigator.geolocation.watchPosition(
+                    (watchPosition) => {
+                        // Only update if this position is more accurate
+                        if (!bestPosition || watchPosition.coords.accuracy < bestPosition.coords.accuracy) {
+                            bestPosition = watchPosition;
+                            handlePosition(watchPosition);
+                        }
+                    },
+                    handlePositionError,
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 30000,
+                        maximumAge: 0
+                    }
+                );
+                
+                // Try again if accuracy is still poor
+                locationAttempts++;
+                if (locationAttempts < maxLocationAttempts && (!bestPosition || bestPosition.coords.accuracy > 100)) {
+                    setTimeout(getHighAccuracyLocation, 3000);
+                }
+            })
+            .catch(error => {
+                console.error('Error getting accurate position:', error);
+                handlePositionError(error);
+            });
         }
         
         function handlePosition(position) {
@@ -484,65 +531,127 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
         
+        // Handle location requests from other users
+        socket.on('location-requested', (data) => {
+            console.log('Location requested for room:', data.roomId);
+            if (data.roomId === roomId) {
+                // Reset location attempts and get a fresh location
+                locationAttempts = 0;
+                bestPosition = null;
+                
+                // Clear existing location watch
+                if (locationWatchId) {
+                    navigator.geolocation.clearWatch(locationWatchId);
+                    locationWatchId = null;
+                }
+                
+                // Get fresh location
+                getHighAccuracyLocation();
+            }
+        });
+
+        // Periodically refresh location to ensure accuracy
+        setInterval(() => {
+            // Only refresh if we haven't reached max attempts
+            if (locationAttempts < maxLocationAttempts) {
+                console.log('Periodically refreshing location');
+                getHighAccuracyLocation();
+            }
+        }, 60000); // Every minute
+        
         // Receive location updates for other users
         socket.on('receive-location', (data) => {
-            const { userId, username, latitude, longitude, accuracy, isGuest } = data;
-            
-            // Update map view if this is our own location
-            if (userId === user.id) {
-                if (accuracy) {
-                    elements.locationAccuracy.textContent = `Location accuracy: ${Math.round(accuracy)} meters`;
-                    if (accuracy <= 100) {
-                        elements.locationAccuracy.className = 'badge bg-success';
-                    } else if (accuracy <= 500) {
-                        elements.locationAccuracy.className = 'badge bg-warning text-dark';
+            try {
+                if (!data || !data.userId || !data.username) {
+                    console.error('Invalid location data received:', data);
+                    return;
+                }
+                
+                const { userId, username, latitude, longitude, accuracy, isGuest } = data;
+                
+                // Update map view if this is our own location
+                if (userId === user.id) {
+                    if (accuracy) {
+                        elements.locationAccuracy.textContent = `Location accuracy: ${Math.round(accuracy)} meters`;
+                        if (accuracy <= 100) {
+                            elements.locationAccuracy.className = 'badge bg-success';
+                        } else if (accuracy <= 500) {
+                            elements.locationAccuracy.className = 'badge bg-warning text-dark';
+                        } else {
+                            elements.locationAccuracy.className = 'badge bg-danger';
+                        }
+                    }
+                    
+                    // Set map view to our location with appropriate zoom level based on accuracy
+                    let zoomLevel = 16;
+                    if (accuracy > 5000) zoomLevel = 10;
+                    else if (accuracy > 1000) zoomLevel = 12;
+                    else if (accuracy > 500) zoomLevel = 14;
+                    
+                    map.setView([latitude, longitude], zoomLevel);
+                }
+                
+                // Get or generate color for user
+                const color = getRandomColor(userId);
+                
+                // Create or update marker
+                if (markers[userId]) {
+                    // Update existing marker position
+                    markers[userId].setLatLng([latitude, longitude]);
+                    
+                    // Make sure the marker is visible on the map
+                    if (!map.hasLayer(markers[userId])) {
+                        markers[userId].addTo(map);
+                    }
+                    
+                    // Ensure popup content is up to date
+                    const popup = markers[userId].getPopup();
+                    if (popup) {
+                        popup.setContent(`<b>${username}</b>${isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
                     } else {
-                        elements.locationAccuracy.className = 'badge bg-danger';
+                        markers[userId].bindPopup(`<b>${username}</b>${isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
+                    }
+                } else {
+                    // Create new marker
+                    try {
+                        const icon = createCustomIcon(color, username, isGuest);
+                        markers[userId] = L.marker([latitude, longitude], { icon }).addTo(map);
+                        
+                        // Add popup with user info
+                        markers[userId].bindPopup(`<b>${username}</b>${isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
+                        
+                        // Update last update time every minute
+                        setInterval(() => {
+                            try {
+                                const popup = markers[userId] && markers[userId].getPopup();
+                                if (popup) {
+                                    const lastUpdate = new Date(markers[userId].lastUpdate || Date.now());
+                                    const minutes = Math.floor((Date.now() - lastUpdate) / 60000);
+                                    const timeText = minutes < 1 ? 'just now' : `${minutes} min ago`;
+                                    
+                                    const content = popup.getContent().replace(/<span class="last-update">.*?<\/span>/, `<span class="last-update">${timeText}</span>`);
+                                    popup.setContent(content);
+                                    
+                                    if (popup.isOpen()) {
+                                        popup.update();
+                                    }
+                                }
+                            } catch (err) {
+                                console.error('Error updating marker time:', err);
+                            }
+                        }, 60000);
+                    } catch (err) {
+                        console.error('Error creating marker:', err, data);
                     }
                 }
                 
-                // Set map view to our location with appropriate zoom level based on accuracy
-                let zoomLevel = 16;
-                if (accuracy > 5000) zoomLevel = 10;
-                else if (accuracy > 1000) zoomLevel = 12;
-                else if (accuracy > 500) zoomLevel = 14;
-                
-                map.setView([latitude, longitude], zoomLevel);
+                // Store last update time
+                if (markers[userId]) {
+                    markers[userId].lastUpdate = Date.now();
+                }
+            } catch (err) {
+                console.error('Error processing location update:', err);
             }
-            
-            // Get or generate color for user
-            const color = getRandomColor(userId);
-            
-            // Create or update marker
-            if (markers[userId]) {
-                markers[userId].setLatLng([latitude, longitude]);
-            } else {
-                const icon = createCustomIcon(color, username, isGuest);
-                markers[userId] = L.marker([latitude, longitude], { icon }).addTo(map);
-                
-                // Add popup with user info
-                markers[userId].bindPopup(`<b>${username}</b>${isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
-                
-                // Update last update time every minute
-                setInterval(() => {
-                    const popup = markers[userId].getPopup();
-                    if (popup) {
-                        const lastUpdate = new Date(markers[userId].lastUpdate || Date.now());
-                        const minutes = Math.floor((Date.now() - lastUpdate) / 60000);
-                        const timeText = minutes < 1 ? 'just now' : `${minutes} min ago`;
-                        
-                        const content = popup.getContent().replace(/<span class="last-update">.*?<\/span>/, `<span class="last-update">${timeText}</span>`);
-                        popup.setContent(content);
-                        
-                        if (popup.isOpen()) {
-                            popup.update();
-                        }
-                    }
-                }, 60000);
-            }
-            
-            // Store last update time
-            markers[userId].lastUpdate = Date.now();
         });
         
         // Handle user disconnection
@@ -557,29 +666,81 @@ document.addEventListener('DOMContentLoaded', async () => {
         socket.on('online-users', (users) => {
             console.log('Received online users:', users);
             
-            // Update members list
-            elements.membersList.innerHTML = '';
-            elements.onlineCount.textContent = users.length;
-            
-            // Check if current user is in the list
-            const currentUserInList = users.some(member => member.id === user.id);
-            
-            // If current user is not in the list, add them
-            if (!currentUserInList) {
-                users.push({
-                    id: user.id,
-                    username: user.username,
-                    isGuest: isGuest,
-                    isOwner: false
-                });
-                console.log('Added current user to list as they were missing');
+            if (!users || !Array.isArray(users)) {
+                console.error('Invalid users data received:', users);
+                return;
             }
             
-            // Add all users to the list
-            users.forEach(member => {
-                const listItem = createMemberListItem(member);
-                elements.membersList.appendChild(listItem);
-            });
+            try {
+                // Update members list
+                elements.membersList.innerHTML = '';
+                elements.onlineCount.textContent = users.length;
+                
+                // Check if current user is in the list
+                const currentUserInList = users.some(member => member && member.id === user.id);
+                
+                // If current user is not in the list, add them
+                if (!currentUserInList) {
+                    users.push({
+                        id: user.id,
+                        username: user.username,
+                        isGuest: isGuest,
+                        isOwner: false
+                    });
+                    console.log('Added current user to list as they were missing');
+                }
+                
+                // Sort users: owner first, then registered users, then guests
+                users.sort((a, b) => {
+                    if (a.isOwner && !b.isOwner) return -1;
+                    if (!a.isOwner && b.isOwner) return 1;
+                    if (!a.isGuest && b.isGuest) return -1;
+                    if (a.isGuest && !b.isGuest) return 1;
+                    return a.username.localeCompare(b.username);
+                });
+                
+                // Add all users to the list
+                users.forEach(member => {
+                    if (!member || !member.id) {
+                        console.warn('Invalid member data:', member);
+                        return;
+                    }
+                    
+                    try {
+                        const listItem = createMemberListItem(member);
+                        elements.membersList.appendChild(listItem);
+                        
+                        // Ensure marker exists for this user if we have their location
+                        if (!markers[member.id] && roomUsers.has(roomId)) {
+                            // Request latest location for this user
+                            socket.emit('request-location', {
+                                targetUserId: member.id,
+                                roomId: roomId
+                            });
+                        }
+                    } catch (err) {
+                        console.error('Error creating member list item:', err);
+                    }
+                });
+                
+                // Force refresh markers to ensure they're all visible
+                for (const userId in markers) {
+                    if (markers[userId]) {
+                        const latLng = markers[userId].getLatLng();
+                        markers[userId].setLatLng([latLng.lat, latLng.lng]);
+                        
+                        // Ensure marker has a popup
+                        if (!markers[userId].getPopup()) {
+                            const member = users.find(m => m && m.id === userId);
+                            if (member) {
+                                markers[userId].bindPopup(`<b>${member.username}</b>${member.isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
+                            }
+                        }
+                    }
+                }
+            } catch (err) {
+                console.error('Error processing online users:', err);
+            }
         });
         
         // Member search
@@ -655,4 +816,85 @@ document.addEventListener('DOMContentLoaded', async () => {
         alert("An error occurred. Returning to home page.");
         window.location.href = "/";
     }
+    
+    // Check if device is mobile
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    if (isMobile) {
+        // Apply mobile-specific adjustments
+        console.log('Mobile device detected, applying mobile optimizations');
+        
+        // Add touch-specific event handling for map
+        if (map) {
+            // Disable map drag when interacting with the members sidebar on mobile
+            const membersSidebar = document.querySelector('.members-sidebar');
+            if (membersSidebar) {
+                membersSidebar.addEventListener('touchstart', function(e) {
+                    map.dragging.disable();
+                });
+                
+                membersSidebar.addEventListener('touchend', function(e) {
+                    setTimeout(() => {
+                        map.dragging.enable();
+                    }, 100);
+                });
+            }
+            
+            // Make map markers larger on mobile for easier tapping
+            for (const userId in markers) {
+                if (markers[userId]) {
+                    const markerElement = markers[userId].getElement();
+                    if (markerElement) {
+                        const markerIcon = markerElement.querySelector('div');
+                        if (markerIcon) {
+                            markerIcon.style.transform = 'scale(1.2)';
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Add a "scroll to bottom" button for chat on mobile
+        const chatMessages = document.getElementById('chat-messages');
+        if (chatMessages) {
+            const scrollButton = document.createElement('button');
+            scrollButton.className = 'btn btn-sm btn-primary position-absolute bottom-0 end-0 m-2 d-none';
+            scrollButton.innerHTML = '<i class="bi bi-arrow-down"></i>';
+            scrollButton.style.zIndex = '1000';
+            scrollButton.style.opacity = '0.7';
+            scrollButton.style.borderRadius = '50%';
+            scrollButton.style.width = '40px';
+            scrollButton.style.height = '40px';
+            
+            chatMessages.style.position = 'relative';
+            chatMessages.appendChild(scrollButton);
+            
+            scrollButton.addEventListener('click', () => {
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            });
+            
+            // Show scroll button when not at bottom
+            chatMessages.addEventListener('scroll', () => {
+                const isScrolledToBottom = chatMessages.scrollHeight - chatMessages.clientHeight <= chatMessages.scrollTop + 50;
+                scrollButton.classList.toggle('d-none', isScrolledToBottom);
+            });
+        }
+        
+        // Auto-hide address bar on mobile browsers
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                window.scrollTo(0, 1);
+            }, 0);
+        });
+    }
+    
+    // Handle orientation change for mobile devices
+    window.addEventListener('orientationchange', () => {
+        setTimeout(() => {
+            window.scrollTo(0, 1);
+            if (map) {
+                map.invalidateSize();
+            }
+        }, 200);
+    });
 }); 

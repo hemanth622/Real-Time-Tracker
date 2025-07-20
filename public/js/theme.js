@@ -1,11 +1,13 @@
 // Theme management functionality
 document.addEventListener('DOMContentLoaded', function() {
-    // Create theme toggle button
-    const themeToggle = document.createElement('button');
-    themeToggle.className = 'theme-toggle';
-    themeToggle.setAttribute('aria-label', 'Toggle theme');
-    themeToggle.innerHTML = '<i class="bi bi-moon-fill"></i>';
-    document.body.appendChild(themeToggle);
+    // Find the theme toggle button
+    const themeToggle = document.getElementById('theme-toggle-btn');
+    
+    // If the button doesn't exist, don't proceed
+    if (!themeToggle) {
+        console.error('Theme toggle button not found');
+        return;
+    }
     
     // Check for saved theme preference or default to dark theme
     const savedTheme = localStorage.getItem('theme') || 'dark-theme';

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dashboard - Real-Time Tracking App</title>
+    <title>Dashboard - Real-Time Location Tracker</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
     <link rel="stylesheet" href="/css/style.css">
@@ -31,6 +31,12 @@
                             <span class="badge bg-danger notification-badge" style="display: none;">0</span>
                         </a>
                     </li>
+                    <!-- Theme Toggle Button -->
+                    <li class="nav-item">
+                        <button id="theme-toggle-btn" class="btn btn-outline-light ms-2 me-2" aria-label="Toggle theme">
+                            <i class="bi bi-moon-fill"></i>
+                        </button>
+                    </li>
                     <li class="nav-item dropdown">
                         <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
                             <i class="bi bi-person-circle me-1"></i><span id="username-display">User</span>
@@ -57,9 +63,14 @@
                 <p class="lead">Create or join rooms to track locations in real-time with your friends and family.</p>
             </div>
             <div class="col-md-4 text-end">
-                <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createRoomModal">
-                    <i class="bi bi-plus-circle me-2"></i>Create New Room
-                </button>
+                <div class="btn-group">
+                    <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#createRoomModal">
+                        <i class="bi bi-plus-circle me-2"></i>Create Room
+                    </button>
+                    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#joinRoomModal">
+                        <i class="bi bi-box-arrow-in-right me-2"></i>Join Room
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -122,6 +133,30 @@
                         </div>
                         <div class="d-grid">
                             <button type="submit" class="btn btn-primary" id="create-room-submit">Create Room</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Join Room Modal -->
+    <div class="modal fade" id="joinRoomModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header bg-success text-white">
+                    <h5 class="modal-title"><i class="bi bi-box-arrow-in-right me-2"></i>Join Room</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="join-room-form">
+                        <div class="mb-3">
+                            <label for="join-room-id" class="form-label">Room ID</label>
+                            <input type="text" class="form-control" id="join-room-id" placeholder="Enter 6-digit room ID" required pattern="[A-Z0-9]{6}" maxlength="6">
+                            <div class="form-text">Enter the 6-character room ID provided by the room owner.</div>
+                        </div>
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-success" id="join-room-submit">Join Room</button>
                         </div>
                     </form>
                 </div>

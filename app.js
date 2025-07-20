@@ -176,12 +176,12 @@ app.post('/api/rooms/create', authenticateToken, (req, res) => {
             return res.status(400).json({ message: 'Room name is required' });
         }
         
-        // Generate unique room ID (6 characters)
+        // Generate unique room ID (6 digits)
         const generateRoomId = () => {
-            const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+            const digits = '0123456789';
             let result = '';
             for (let i = 0; i < 6; i++) {
-                result += chars.charAt(Math.floor(Math.random() * chars.length));
+                result += digits.charAt(Math.floor(Math.random() * digits.length));
             }
             return result;
         };
@@ -459,20 +459,12 @@ io.on('connection', (socket) => {
             room.members.push(userId);
         }
         
-        // Always add the current user first to ensure they're included
-        const onlineUsers = [{
-            id: userId,
-            username: username,
-            isGuest: isGuest,
-            isOwner: room && room.ownerId === userId
-        }];
+        // Collect all users in the room, including guests and registered users
+        const onlineUsers = [];
         
-        // Add all registered users from this room (except the current user who was already added)
+        // Add all registered users from this room
         if (room && room.members) {
             for (const memberId of room.members) {
-                // Skip the current user as they were already added
-                if (memberId === userId && !isGuest) continue;
-                
                 const member = users.find(u => u.id === memberId);
                 if (member) {
                     onlineUsers.push({
@@ -485,21 +477,44 @@ io.on('connection', (socket) => {
             }
         }
         
-        // Ensure the room owner is included in the list
-        if (room && room.ownerId && room.ownerId !== userId) {
-            const ownerExists = onlineUsers.some(u => u.id === room.ownerId);
-            if (!ownerExists) {
-                const owner = users.find(u => u.id === room.ownerId);
-                if (owner) {
+        // Add current user if they're a guest or not already in the list
+        const userAlreadyInList = onlineUsers.some(u => u.id === userId);
+        if (isGuest || !userAlreadyInList) {
+            onlineUsers.push({
+                id: userId,
+                username: username,
+                isGuest: isGuest,
+                isOwner: room && room.ownerId === userId
+            });
+        }
+        
+        // Add any active guest users in this room
+        const roomGuestUsers = Array.from(roomUsers.get(roomId) || [])
+            .filter(id => id.startsWith('guest_') && id !== userId);
+            
+        for (const guestId of roomGuestUsers) {
+            // Find the socket for this guest user
+            const guestSocketId = Array.from(io.sockets.sockets.keys())
+                .find(socketId => {
+                    const socket = io.sockets.sockets.get(socketId);
+                    return socket && socket.rooms.has(roomId) && socket.data && socket.data.userId === guestId;
+                });
+                
+            if (guestSocketId) {
+                const guestSocket = io.sockets.sockets.get(guestSocketId);
+                if (guestSocket && guestSocket.data && guestSocket.data.username) {
                     onlineUsers.push({
-                        id: room.ownerId,
-                        username: owner.username,
-                        isGuest: false,
-                        isOwner: true
+                        id: guestId,
+                        username: guestSocket.data.username,
+                        isGuest: true,
+                        isOwner: false
                     });
                 }
             }
         }
+        
+        // Store user data in socket for later reference
+        socket.data = { userId, username, isGuest };
         
         // Emit the online users list to all clients in the room
         io.to(roomId).emit('online-users', onlineUsers);
@@ -531,7 +546,34 @@ io.on('connection', (socket) => {
             isGuest
         });
     });
-    
+
+    // Request location from a specific user
+    socket.on('request-location', (data) => {
+        const { targetUserId, roomId } = data;
+        
+        // Find the socket for the target user
+        const targetSocketId = activeUsers.get(targetUserId);
+        if (targetSocketId) {
+            const targetSocket = io.sockets.sockets.get(targetSocketId);
+            if (targetSocket) {
+                // Forward the request to the target user
+                targetSocket.emit('location-requested', { roomId });
+            }
+        } else if (targetUserId.startsWith('guest_')) {
+            // Try to find guest socket by iterating through sockets in the room
+            const roomSockets = io.sockets.adapter.rooms.get(roomId);
+            if (roomSockets) {
+                for (const socketId of roomSockets) {
+                    const socket = io.sockets.sockets.get(socketId);
+                    if (socket && socket.data && socket.data.userId === targetUserId) {
+                        socket.emit('location-requested', { roomId });
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
     // Send message
     socket.on('send-message', (data) => {
         const { userId, username, roomId, message, timestamp, isGuest } = data;
@@ -564,12 +606,19 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => {
         console.log('Client disconnected');
         
-        // Find user by socket ID
+        // Find user by socket ID or socket data
         let disconnectedUserId = null;
-        for (const [userId, socketId] of activeUsers.entries()) {
-            if (socketId === socket.id) {
-                disconnectedUserId = userId;
-                break;
+        
+        // First try to get user ID from socket data
+        if (socket.data && socket.data.userId) {
+            disconnectedUserId = socket.data.userId;
+        } else {
+            // If not in socket data, check activeUsers map
+            for (const [userId, socketId] of activeUsers.entries()) {
+                if (socketId === socket.id) {
+                    disconnectedUserId = userId;
+                    break;
+                }
             }
         }
         
@@ -578,31 +627,78 @@ io.on('connection', (socket) => {
             activeUsers.delete(disconnectedUserId);
             
             // Notify all rooms the user was in
+            const roomsToUpdate = new Set();
+            
+            // Check user's registered rooms
             if (userRooms.has(disconnectedUserId)) {
                 for (const roomId of userRooms.get(disconnectedUserId)) {
-                    // Remove user from room users
-                    if (roomUsers.has(roomId)) {
-                        roomUsers.get(roomId).delete(disconnectedUserId);
-                        
-                        // Find the room for owner check
-                        const room = rooms.find(r => r.id === roomId);
-                        
-                        // Send updated user list
-                        const roomUsersList = Array.from(roomUsers.get(roomId)).map(id => {
-                            const user = users.find(u => u.id === id);
-                            return user ? {
-                                id,
-                                username: user.username,
-                                isGuest: false,
-                                isOwner: room && room.ownerId === id
-                            } : null;
+                    roomsToUpdate.add(roomId);
+                }
+            }
+            
+            // Check all rooms for this socket
+            for (const room of socket.rooms) {
+                // Skip the socket's own room (socket.id)
+                if (room !== socket.id) {
+                    roomsToUpdate.add(room);
+                }
+            }
+            
+            // Update each room
+            for (const roomId of roomsToUpdate) {
+                // Remove user from room users
+                if (roomUsers.has(roomId)) {
+                    roomUsers.get(roomId).delete(disconnectedUserId);
+                    
+                    // Find the room for owner check
+                    const room = rooms.find(r => r.id === roomId);
+                    if (!room) continue;
+                    
+                    // Get all registered users for this room
+                    const registeredUsers = room.members.map(id => {
+                        const user = users.find(u => u.id === id);
+                        return user ? {
+                            id,
+                            username: user.username,
+                            isGuest: false,
+                            isOwner: room.ownerId === id
+                        } : null;
+                    }).filter(Boolean);
+                    
+                    // Get active guest users for this room
+                    const guestUsers = Array.from(roomUsers.get(roomId) || [])
+                        .filter(id => id.startsWith('guest_'))
+                        .map(guestId => {
+                            // Find socket for this guest
+                            const guestSocketId = Array.from(io.sockets.sockets.keys())
+                                .find(socketId => {
+                                    const socket = io.sockets.sockets.get(socketId);
+                                    return socket && socket.rooms.has(roomId) && 
+                                           socket.data && socket.data.userId === guestId;
+                                });
+                                
+                            if (guestSocketId) {
+                                const guestSocket = io.sockets.sockets.get(guestSocketId);
+                                if (guestSocket && guestSocket.data) {
+                                    return {
+                                        id: guestId,
+                                        username: guestSocket.data.username,
+                                        isGuest: true,
+                                        isOwner: false
+                                    };
+                                }
+                            }
+                            return null;
                         }).filter(Boolean);
-                        
-                        io.to(roomId).emit('online-users', roomUsersList);
-                        
-                        // Notify room that user disconnected
-                        io.to(roomId).emit('user-disconnected', disconnectedUserId);
-                    }
+                    
+                    // Combine registered and guest users
+                    const roomUsersList = [...registeredUsers, ...guestUsers];
+                    
+                    // Send updated user list to all clients in the room
+                    io.to(roomId).emit('online-users', roomUsersList);
+                    
+                    // Notify room that user disconnected
+                    io.to(roomId).emit('user-disconnected', disconnectedUserId);
                 }
             }
         }

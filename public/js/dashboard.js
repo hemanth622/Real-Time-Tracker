@@ -8,6 +8,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         profileEmail: document.getElementById('profile-email'),
         logoutBtn: document.getElementById('logout-btn'),
         createRoomForm: document.getElementById('create-room-form'),
+        joinRoomForm: document.getElementById('join-room-form'),
+        joinRoomId: document.getElementById('join-room-id'),
         roomName: document.getElementById('room-name'),
         roomDescription: document.getElementById('room-description'),
         myRooms: document.getElementById('my-rooms'),
@@ -146,7 +148,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         enterBtn.className = 'btn btn-sm btn-primary enter-room';
         enterBtn.innerHTML = '<i class="bi bi-box-arrow-in-right me-1"></i>Enter';
         enterBtn.dataset.roomId = room.id;
-        console.log('Created enter button with roomId:', room.id);
+        enterBtn.addEventListener('click', () => {
+            window.location.href = `/tracker/${room.id}`;
+        });
         
         roomActions.appendChild(enterBtn);
         
@@ -210,6 +214,75 @@ document.addEventListener('DOMContentLoaded', async () => {
             elements.joinedRoomsCount.textContent = elements.joinedRooms.children.length;
         }
     }
+    
+    // Handle join room form submission
+    if (elements.joinRoomForm) {
+        elements.joinRoomForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            if (!elements.joinRoomId) return;
+            
+            const roomId = elements.joinRoomId.value.trim().toUpperCase();
+            
+            if (!roomId || roomId.length !== 6) {
+                alert('Please enter a valid 6-character room ID.');
+                return;
+            }
+            
+            try {
+                // First try to fetch room details to verify it exists
+                const checkResponse = await fetch(`/api/rooms/${roomId}`, {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                
+                if (checkResponse.ok) {
+                    // Room exists and user has access, redirect to tracker
+                    window.location.href = `/tracker/${roomId}`;
+                } else if (checkResponse.status === 404) {
+                    // Room doesn't exist
+                    alert('Room not found. Please check the room ID and try again.');
+                } else if (checkResponse.status === 403) {
+                    // User doesn't have access, try to join
+                    const joinResponse = await fetch(`/api/rooms/${roomId}/join`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        }
+                    });
+                    
+                    if (joinResponse.ok) {
+                        // Successfully joined, redirect to tracker
+                        window.location.href = `/tracker/${roomId}`;
+                    } else {
+                        const data = await joinResponse.json();
+                        alert(data.message || 'Failed to join room. Please try again.');
+                    }
+                } else {
+                    alert('Failed to join room. Please try again.');
+                }
+            } catch (error) {
+                console.error('Join room error:', error);
+                alert('An error occurred while joining the room. Please try again.');
+            }
+        });
+    }
+    
+    // Add click handlers for enter room buttons
+    document.addEventListener('click', (e) => {
+        if (e.target.classList.contains('enter-room') || 
+            (e.target.parentElement && e.target.parentElement.classList.contains('enter-room'))) {
+            
+            const button = e.target.classList.contains('enter-room') ? e.target : e.target.parentElement;
+            const roomId = button.dataset.roomId;
+            
+            if (roomId) {
+                window.location.href = `/tracker/${roomId}`;
+            }
+        }
+    });
     
     // Initialize
     fetchRooms();
