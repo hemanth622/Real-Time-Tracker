@@ -11,7 +11,7 @@ const helmet = require('helmet');
 
 // Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 10000; // Default to port 10000
+const PORT = process.env.PORT || 3000; // Use standard port 3000 as fallback
 const HOST = '0.0.0.0';  // Listen on all interfaces
 
 // Enhance security with helmet
