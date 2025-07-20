@@ -341,9 +341,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         // Get high accuracy location with better precision for all users
         let locationAttempts = 0;
-        const maxLocationAttempts = 20; // Increase max attempts for better accuracy
+        const maxLocationAttempts = 30; // Increase max attempts for better accuracy
         let locationWatchId;
         let bestPosition = null;
+        const minAccuracyThreshold = 30; // Minimum accuracy in meters that we consider "good enough"
+        const positionHistory = []; // Store recent positions for averaging/filtering
 
         function getHighAccuracyLocation() {
             // Update status
@@ -370,11 +372,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
             };
             
-            // Try multiple times with different approaches
+            // Try multiple times with different approaches and timeouts
             Promise.all([
                 getAccuratePosition().catch(() => null),
                 new Promise(resolve => setTimeout(() => getAccuratePosition().catch(() => null).then(resolve), 1000)),
-                new Promise(resolve => setTimeout(() => getAccuratePosition().catch(() => null).then(resolve), 2000))
+                new Promise(resolve => setTimeout(() => getAccuratePosition().catch(() => null).then(resolve), 2000)),
+                new Promise(resolve => setTimeout(() => getAccuratePosition().catch(() => null).then(resolve), 3000))
             ])
             .then(positions => {
                 // Filter out null positions
@@ -395,10 +398,25 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Then start watching with high accuracy options
                 locationWatchId = navigator.geolocation.watchPosition(
                     (watchPosition) => {
-                        // Only update if this position is more accurate
-                        if (!bestPosition || watchPosition.coords.accuracy < bestPosition.coords.accuracy) {
-                            bestPosition = watchPosition;
-                            handlePosition(watchPosition);
+                        // Add to position history for filtering
+                        positionHistory.push(watchPosition);
+                        
+                        // Keep only the last 5 positions
+                        if (positionHistory.length > 5) {
+                            positionHistory.shift();
+                        }
+                        
+                        // Only update if this position is more accurate or we have enough history for filtering
+                        if (!bestPosition || watchPosition.coords.accuracy < bestPosition.coords.accuracy || positionHistory.length >= 3) {
+                            // If we have multiple positions, use filtering to improve accuracy
+                            if (positionHistory.length >= 3) {
+                                const filteredPosition = filterPositions(positionHistory);
+                                bestPosition = filteredPosition;
+                                handlePosition(filteredPosition);
+                            } else {
+                                bestPosition = watchPosition;
+                                handlePosition(watchPosition);
+                            }
                         }
                     },
                     handlePositionError,
@@ -411,8 +429,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 
                 // Try again if accuracy is still poor
                 locationAttempts++;
-                if (locationAttempts < maxLocationAttempts && (!bestPosition || bestPosition.coords.accuracy > 100)) {
-                    setTimeout(getHighAccuracyLocation, 3000);
+                if (locationAttempts < maxLocationAttempts && (!bestPosition || bestPosition.coords.accuracy > minAccuracyThreshold)) {
+                    setTimeout(getHighAccuracyLocation, 2000);
                 }
             })
             .catch(error => {
@@ -421,14 +439,62 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
         }
         
+        // Filter positions to improve accuracy
+        function filterPositions(positions) {
+            // Sort positions by accuracy (best first)
+            const sortedPositions = [...positions].sort((a, b) => a.coords.accuracy - b.coords.accuracy);
+            
+            // If we have a very accurate position, just use that
+            if (sortedPositions[0].coords.accuracy < minAccuracyThreshold) {
+                return sortedPositions[0];
+            }
+            
+            // Otherwise, use a weighted average of positions
+            // More weight to more accurate and more recent positions
+            let totalWeight = 0;
+            let weightedLat = 0;
+            let weightedLng = 0;
+            let bestAccuracy = Infinity;
+            
+            sortedPositions.forEach((pos, index) => {
+                // Weight by accuracy (inverse) and recency
+                const accuracyWeight = 1 / Math.max(10, pos.coords.accuracy);
+                const recencyWeight = (index + 1) / sortedPositions.length;
+                const weight = accuracyWeight * recencyWeight;
+                
+                weightedLat += pos.coords.latitude * weight;
+                weightedLng += pos.coords.longitude * weight;
+                totalWeight += weight;
+                
+                // Track best accuracy
+                bestAccuracy = Math.min(bestAccuracy, pos.coords.accuracy);
+            });
+            
+            // Create a synthetic position with the weighted average
+            const avgPosition = {
+                coords: {
+                    latitude: weightedLat / totalWeight,
+                    longitude: weightedLng / totalWeight,
+                    accuracy: bestAccuracy * 0.8, // Slightly better than best individual accuracy due to averaging
+                    altitude: null,
+                    altitudeAccuracy: null,
+                    heading: null,
+                    speed: null
+                },
+                timestamp: Date.now()
+            };
+            
+            return avgPosition;
+        }
+        
         function handlePosition(position) {
             const { latitude, longitude, accuracy } = position.coords;
             
             // Update accuracy display
             elements.locationAccuracy.textContent = `Location accuracy: ${Math.round(accuracy)} meters`;
-            if (accuracy <= 100) {
+            if (accuracy <= minAccuracyThreshold) {
                 elements.locationAccuracy.className = 'badge bg-success';
-            } else if (accuracy <= 500) {
+            } else if (accuracy <= 100) {
                 elements.locationAccuracy.className = 'badge bg-warning text-dark';
             } else {
                 elements.locationAccuracy.className = 'badge bg-danger';
@@ -446,14 +512,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             
             // If accuracy is good enough, stop trying to improve
-            if (accuracy < 50) {
+            if (accuracy < minAccuracyThreshold) {
                 locationAttempts = maxLocationAttempts;
             }
             
             // Try again if accuracy is poor and we haven't reached max attempts
-            locationAttempts++;
-            if (locationAttempts < maxLocationAttempts && accuracy > 100) {
-                setTimeout(getHighAccuracyLocation, 3000);
+            if (locationAttempts < maxLocationAttempts && accuracy > minAccuracyThreshold) {
+                setTimeout(getHighAccuracyLocation, 2000);
             }
         }
         
@@ -495,6 +560,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Reset location tracking
             locationAttempts = 0;
             bestPosition = null;
+            positionHistory.length = 0; // Clear position history
             
             // Clear existing location watch
             if (locationWatchId) {
@@ -502,32 +568,59 @@ document.addEventListener('DOMContentLoaded', async () => {
                 locationWatchId = null;
             }
             
+            // Update UI to show we're refreshing
+            elements.locationAccuracy.textContent = 'Refreshing location...';
+            elements.locationAccuracy.className = 'badge bg-info';
+            
             // Force the browser to get a fresh location
             if ('permissions' in navigator) {
                 navigator.permissions.query({ name: 'geolocation' }).then(result => {
                     if (result.state === 'granted') {
-                        // Clear cached positions by requesting with maximumAge: 0
-                        navigator.geolocation.getCurrentPosition(
-                            position => {
-                                console.log('Cleared cached position');
-                                // Start fresh location tracking
-                                getHighAccuracyLocation();
-                            },
-                            error => {
-                                console.error('Error clearing cache:', error);
-                                // Start fresh location tracking anyway
-                                getHighAccuracyLocation();
-                            },
-                            { maximumAge: 0, timeout: 10000, enableHighAccuracy: true }
-                        );
+                        // Try to clear cached positions by using different options
+                        Promise.all([
+                            // Try with high accuracy
+                            new Promise(resolve => {
+                                navigator.geolocation.getCurrentPosition(
+                                    resolve,
+                                    () => resolve(null),
+                                    { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+                                );
+                            }),
+                            // Try with low accuracy
+                            new Promise(resolve => {
+                                navigator.geolocation.getCurrentPosition(
+                                    resolve,
+                                    () => resolve(null),
+                                    { enableHighAccuracy: false, timeout: 5000, maximumAge: 0 }
+                                );
+                            })
+                        ]).finally(() => {
+                            console.log('Cleared cached positions');
+                            // Start fresh location tracking
+                            setTimeout(getHighAccuracyLocation, 500);
+                        });
                     } else {
-                        // Start fresh location tracking
-                        getHighAccuracyLocation();
+                        // Permission issues - start fresh tracking anyway
+                        setTimeout(getHighAccuracyLocation, 500);
                     }
+                }).catch(error => {
+                    console.error('Permission check error:', error);
+                    // Start fresh location tracking anyway
+                    setTimeout(getHighAccuracyLocation, 500);
                 });
             } else {
-                // Start fresh location tracking
-                getHighAccuracyLocation();
+                // Permissions API not available, try direct approach
+                navigator.geolocation.getCurrentPosition(
+                    () => {
+                        console.log('Refreshed location without permissions API');
+                        setTimeout(getHighAccuracyLocation, 500);
+                    },
+                    () => {
+                        console.warn('Failed to refresh location');
+                        setTimeout(getHighAccuracyLocation, 500);
+                    },
+                    { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+                );
             }
         });
         
