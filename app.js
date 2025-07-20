@@ -11,7 +11,7 @@ const helmet = require('helmet');
 
 // Initialize Express app
 const app = express();
-const PORT = process.env.PORT || 3000; // Use standard port 3000 as fallback
+const PORT = process.env.PORT || 10000; // Default to port 10000
 const HOST = '0.0.0.0';  // Listen on all interfaces
 
 // Enhance security with helmet
@@ -706,16 +706,20 @@ io.on('connection', (socket) => {
 });
 
 // Start server with error handling
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+server.listen(PORT, HOST, () => {
+    console.log(`Server running on ${HOST}:${PORT}`);
 }).on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
         const newPort = parseInt(PORT) + 1;
         console.error(`Port ${PORT} is already in use. Trying port ${newPort}...`);
-        server.listen(newPort, () => {
-            console.log(`Server running on port ${newPort}`);
+        server.listen(newPort, HOST, () => {
+            console.log(`Server running on ${HOST}:${newPort}`);
         });
     } else {
         console.error('Server error:', err);
     }
 });
+
+// Set increased timeout values to prevent connection reset issues
+server.keepAliveTimeout = 120000; // 120 seconds
+server.headersTimeout = 120000; // 120 seconds
