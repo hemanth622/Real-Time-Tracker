@@ -1,0 +1,535 @@
+/* Custom styles to complement Bootstrap */
+
+/* General Styles */
+:root {
+  --primary-color: #0d6efd;
+  --secondary-color: #6c757d;
+  --success-color: #198754;
+  --danger-color: #dc3545;
+  
+  /* Dark theme variables */
+  --dark-bg: #1a1d20;
+  --dark-card: #2c3034;
+  --dark-input: #343a40;
+  --dark-border: #495057;
+  --dark-text: #ffffff;
+  --dark-text-muted: #d1d5db;
+  
+  /* Light theme variables */
+  --light-bg: #f8f9fa;
+  --light-card: #ffffff;
+  --light-input: #f1f3f5;
+  --light-border: #dee2e6;
+  --light-text: #212529;
+  --light-text-muted: #6c757d;
+}
+
+body {
+  min-height: 100vh;
+}
+
+body.dark-theme {
+  background-color: var(--dark-bg);
+  color: var(--dark-text);
+}
+
+body.light-theme {
+  background-color: var(--light-bg);
+  color: var(--light-text);
+}
+
+/* Theme toggle */
+.theme-toggle {
+  position: fixed;
+  top: 15px;
+  right: 15px;
+  z-index: 1000;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  font-size: 1.5rem;
+  color: inherit;
+  padding: 5px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+}
+
+.theme-toggle:hover {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+/* Auth Page Styles */
+.auth-container {
+  max-width: 500px;
+  margin: 2rem auto;
+}
+
+.dark-theme .auth-container {
+  background-color: var(--dark-card) !important;
+  border: 1px solid var(--dark-border);
+}
+
+.light-theme .auth-container {
+  background-color: var(--light-card) !important;
+  border: 1px solid var(--light-border);
+  box-shadow: 0 .5rem 1rem rgba(0,0,0,.1) !important;
+}
+
+.tab-content {
+  display: none;
+}
+
+.tab-content.active {
+  display: block;
+}
+
+.toggle-password {
+  cursor: pointer;
+}
+
+.dark-theme .nav-tabs {
+  border-bottom-color: var(--dark-border);
+}
+
+.light-theme .nav-tabs {
+  border-bottom-color: var(--light-border);
+}
+
+.dark-theme .nav-tabs .nav-link {
+  color: var(--dark-text);
+}
+
+.light-theme .nav-tabs .nav-link {
+  color: var(--light-text);
+}
+
+.dark-theme .nav-tabs .nav-link.active {
+  background-color: transparent;
+  border-color: var(--dark-border);
+  border-bottom-color: var(--dark-card);
+  color: var(--primary-color);
+}
+
+.light-theme .nav-tabs .nav-link.active {
+  background-color: transparent;
+  border-color: var(--light-border);
+  border-bottom-color: var(--light-card);
+  color: var(--primary-color);
+}
+
+.dark-theme .form-control, .dark-theme .input-group-text {
+  background-color: var(--dark-input);
+  border-color: var(--dark-border);
+  color: var(--dark-text);
+}
+
+.light-theme .form-control, .light-theme .input-group-text {
+  background-color: var(--light-input);
+  border-color: var(--light-border);
+  color: var(--light-text);
+}
+
+.dark-theme .form-control:focus {
+  background-color: var(--dark-input);
+  color: var(--dark-text);
+  border-color: var(--primary-color);
+}
+
+.light-theme .form-control:focus {
+  background-color: var(--light-input);
+  color: var(--light-text);
+  border-color: var(--primary-color);
+}
+
+.dark-theme .form-label {
+  color: var(--dark-text);
+}
+
+.light-theme .form-label {
+  color: var(--light-text);
+}
+
+.dark-theme .text-muted {
+  color: var(--dark-text-muted) !important;
+}
+
+.light-theme .text-muted {
+  color: var(--light-text-muted) !important;
+}
+
+/* Feature Icons Animation */
+.feature-icon {
+  margin-bottom: 15px;
+}
+
+.feature-icon:hover {
+  transform: translateY(-5px);
+}
+
+/* Dashboard Styles */
+.room-card {
+  margin-bottom: 1rem;
+  border-radius: 0.375rem;
+  padding: 1rem;
+}
+
+.dark-theme .room-card {
+  border: 1px solid var(--dark-border);
+  background-color: var(--dark-card);
+}
+
+.light-theme .room-card {
+  border: 1px solid var(--light-border);
+  background-color: var(--light-card);
+  box-shadow: 0 .125rem .25rem rgba(0,0,0,.075);
+}
+
+.dark-theme .room-card h3 {
+  color: var(--dark-text);
+}
+
+.light-theme .room-card h3 {
+  color: var(--light-text);
+}
+
+.room-card h3 {
+  font-size: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.dark-theme .room-card p {
+  color: var(--dark-text-muted);
+}
+
+.light-theme .room-card p {
+  color: var(--light-text-muted);
+}
+
+.room-card p {
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+
+.room-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.room-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.avatar-placeholder {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+}
+
+.dark-theme .avatar-placeholder {
+  background-color: var(--dark-input);
+  color: var(--dark-text);
+}
+
+.light-theme .avatar-placeholder {
+  background-color: var(--light-input);
+  color: var(--light-text);
+}
+
+/* Tracker Page Styles */
+.tracker-container {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.members-sidebar {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+}
+
+.dark-theme .members-sidebar {
+  background-color: var(--dark-card);
+  border-right: 1px solid var(--dark-border);
+}
+
+.light-theme .members-sidebar {
+  background-color: var(--light-card);
+  border-right: 1px solid var(--light-border);
+}
+
+.members-list {
+  flex: 1;
+  overflow-y: auto;
+  max-height: calc(100vh - 200px);
+}
+
+.dark-theme .members-list {
+  background-color: var(--dark-card);
+}
+
+.light-theme .members-list {
+  background-color: var(--light-card);
+}
+
+.members-list .member-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.map-container {
+  flex: 1;
+}
+
+/* Custom marker styles */
+.custom-marker {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+/* Chat Styles */
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 400px;
+}
+
+.dark-theme .chat-container {
+  background-color: var(--dark-card);
+}
+
+.light-theme .chat-container {
+  background-color: var(--light-card);
+}
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  max-height: 350px;
+}
+
+.chat-message {
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border-radius: 18px;
+  max-width: 75%;
+  position: relative;
+}
+
+.chat-message.sent {
+  background-color: var(--primary-color);
+  color: white;
+  margin-left: auto;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-message.received {
+  margin-right: auto;
+  border-bottom-left-radius: 4px;
+}
+
+.dark-theme .chat-message.received {
+  background-color: var(--dark-input);
+  color: var(--dark-text);
+}
+
+.light-theme .chat-message.received {
+  background-color: var(--light-input);
+  color: var(--light-text);
+}
+
+.chat-message .sender {
+  font-size: 0.75rem;
+  font-weight: bold;
+  margin-bottom: 2px;
+}
+
+.chat-message .time {
+  font-size: 0.7rem;
+  position: absolute;
+  bottom: 2px;
+  right: 8px;
+  opacity: 0.7;
+}
+
+.chat-message.received .time {
+  right: auto;
+  left: 8px;
+}
+
+/* Modal Styles */
+.dark-theme .modal-content {
+  background-color: var(--dark-card);
+  border-color: var(--dark-border);
+}
+
+.light-theme .modal-content {
+  background-color: var(--light-card);
+  border-color: var(--light-border);
+}
+
+.dark-theme .modal-header {
+  border-bottom-color: var(--dark-border);
+}
+
+.light-theme .modal-header {
+  border-bottom-color: var(--light-border);
+}
+
+.dark-theme .modal-footer {
+  border-top-color: var(--dark-border);
+}
+
+.light-theme .modal-footer {
+  border-top-color: var(--light-border);
+}
+
+.dark-theme .alert-info {
+  background-color: rgba(13, 202, 240, 0.15);
+  border-color: rgba(13, 202, 240, 0.4);
+  color: #0dcaf0;
+}
+
+.light-theme .alert-info {
+  background-color: #cff4fc;
+  border-color: #b6effb;
+  color: #055160;
+}
+
+/* Responsive styles */
+@media (max-width: 768px) {
+  .members-sidebar {
+    width: 100%;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--dark-border);
+  }
+  
+  .dark-theme .members-sidebar {
+    border-bottom: 1px solid var(--dark-border);
+  }
+  
+  .light-theme .members-sidebar {
+    border-bottom: 1px solid var(--light-border);
+  }
+
+  .tracker-content {
+    flex-direction: column;
+  }
+
+  .map-container {
+    height: 60vh;
+  }
+
+  .room-card .room-actions {
+    flex-direction: column;
+  }
+  
+  .room-card .room-actions .btn {
+    margin-bottom: 0.5rem;
+  }
+}
+
+.location-controls,
+.chat-controls {
+  padding: 10px;
+  border-top: 1px solid;
+}
+
+.dark-theme .location-controls,
+.dark-theme .chat-controls {
+  border-top-color: var(--dark-border);
+}
+
+.light-theme .location-controls,
+.light-theme .chat-controls {
+  border-top-color: var(--light-border);
+}
+
+/* Additional dark theme improvements */
+.dark-theme .dropdown-item {
+  color: var(--dark-text);
+}
+
+.dark-theme .dropdown-menu {
+  background-color: var(--dark-card);
+  border-color: var(--dark-border);
+}
+
+.dark-theme .list-group-item {
+  background-color: var(--dark-card);
+  color: var(--dark-text);
+  border-color: var(--dark-border);
+}
+
+.dark-theme .card {
+  background-color: var(--dark-card);
+  border-color: var(--dark-border);
+}
+
+.dark-theme .card-header {
+  border-bottom-color: var(--dark-border);
+}
+
+.dark-theme .card-footer {
+  border-top-color: var(--dark-border);
+}
+
+/* Ensure buttons have proper contrast in dark theme */
+.dark-theme .btn-outline-secondary {
+  color: #e2e8f0;
+  border-color: #64748b;
+}
+
+.dark-theme .btn-outline-secondary:hover {
+  background-color: #64748b;
+  color: #ffffff;
+}
+
+.dark-theme .btn-outline-primary {
+  color: #93c5fd;
+  border-color: var(--primary-color);
+}
+
+.dark-theme .btn-outline-primary:hover {
+  background-color: var(--primary-color);
+  color: #ffffff;
+}
+
+/* Ensure text is visible in all components */
+.dark-theme h1, 
+.dark-theme h2, 
+.dark-theme h3, 
+.dark-theme h4, 
+.dark-theme h5, 
+.dark-theme h6,
+.dark-theme p,
+.dark-theme label,
+.dark-theme .nav-link,
+.dark-theme .navbar-brand {
+  color: var(--dark-text);
+}
+
+.dark-theme .text-muted {
+  color: var(--dark-text-muted) !important;
+}
+
+/* Improve visibility for form controls */
+.dark-theme .form-control::placeholder {
+  color: #9ca3af;
+}
