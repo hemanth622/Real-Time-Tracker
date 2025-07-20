@@ -662,13 +662,15 @@ document.addEventListener('DOMContentLoaded', async () => {
                 
                 const { userId, username, latitude, longitude, accuracy, isGuest } = data;
                 
+                // Always process location updates for all users, regardless of who is the room owner
+                
                 // Update map view if this is our own location
                 if (userId === user.id) {
                     if (accuracy) {
                         elements.locationAccuracy.textContent = `Location accuracy: ${Math.round(accuracy)} meters`;
-                        if (accuracy <= 100) {
+                        if (accuracy <= minAccuracyThreshold) {
                             elements.locationAccuracy.className = 'badge bg-success';
-                        } else if (accuracy <= 500) {
+                        } else if (accuracy <= 100) {
                             elements.locationAccuracy.className = 'badge bg-warning text-dark';
                         } else {
                             elements.locationAccuracy.className = 'badge bg-danger';
@@ -803,8 +805,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                         const listItem = createMemberListItem(member);
                         elements.membersList.appendChild(listItem);
                         
-                        // Ensure marker exists for this user if we have their location
-                        if (!markers[member.id] && roomUsers.has(roomId)) {
+                        // Always request location for all users when they join
+                        if (!markers[member.id]) {
                             // Request latest location for this user
                             socket.emit('request-location', {
                                 targetUserId: member.id,

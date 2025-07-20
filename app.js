@@ -536,7 +536,7 @@ io.on('connection', (socket) => {
     socket.on('send-location', (data) => {
         const { userId, username, roomId, latitude, longitude, accuracy, isGuest } = data;
         
-        // Broadcast location to all users in the room
+        // Broadcast location to all users in the room without any permission checks
         io.to(roomId).emit('receive-location', {
             userId,
             username,
@@ -551,6 +551,7 @@ io.on('connection', (socket) => {
     socket.on('request-location', (data) => {
         const { targetUserId, roomId } = data;
         
+        // Allow any user to request location from any other user in the same room
         // Find the socket for the target user
         const targetSocketId = activeUsers.get(targetUserId);
         if (targetSocketId) {
