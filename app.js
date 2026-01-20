@@ -176,6 +176,7 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Basic rate limiting (helps against brute-force and abuse)
+app.set('trust proxy', 1);
 const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 20, // 20 requests per 15 minutes
