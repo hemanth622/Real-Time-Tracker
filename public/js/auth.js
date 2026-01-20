@@ -1,7 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
     // Check if user is already logged in
-    const token = localStorage.getItem('token');
-    if (token) {
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
         // Check if user is trying to join a room directly
         const urlParams = new URLSearchParams(window.location.search);
         const roomId = urlParams.get('roomId');
@@ -99,9 +99,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             
             if (response.ok) {
-                // Store user data in localStorage
+                // Store user data in localStorage (token is kept in HttpOnly cookie)
                 localStorage.setItem('user', JSON.stringify(data.user));
-                localStorage.setItem('token', data.token);
                 
                 // Check if user was trying to join a room
                 const urlParams = new URLSearchParams(window.location.search);

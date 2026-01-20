@@ -1,4 +1,5 @@
 // Import required modules
+require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -8,6 +9,15 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const compression = require('compression');
 const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
+const crypto = require('crypto');
+const { z } = require('zod');
+const sanitizeHtml = require('sanitize-html');
+const { connectMongo, isMongoConfigured, isMongoConnected } = require('./db');
+const User = require('./models/User');
+const Room = require('./models/Room');
+const LocationPing = require('./models/LocationPing');
 
 // Initialize Express app
 const app = express();
@@ -38,6 +48,60 @@ app.set('view engine', 'ejs');
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use(cookieParser());
+
+// --- CSRF protection (double-submit cookie) ---
+// We keep JWT in an HttpOnly cookie, so we require a second, JS-readable token (csrfToken)
+// to be echoed back in a header for all state-changing /api requests.
+const CSRF_COOKIE = 'csrfToken';
+const CSRF_HEADER = 'x-csrf-token';
+
+function issueCsrfToken(res) {
+    const token = crypto.randomBytes(32).toString('base64url');
+    res.cookie(CSRF_COOKIE, token, {
+        httpOnly: false,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 12 * 60 * 60 * 1000, // 12 hours
+    });
+    return token;
+}
+
+function sameOrigin(req) {
+    const origin = req.headers.origin;
+    const host = req.headers.host;
+    if (!origin || !host) return true; // allow non-browser clients (curl)
+    try {
+        const u = new URL(origin);
+        return u.host === host;
+    } catch {
+        return false;
+    }
+}
+
+app.get('/api/csrf-token', (req, res) => {
+    const existing = req.cookies && req.cookies[CSRF_COOKIE];
+    const token = existing || issueCsrfToken(res);
+    res.json({ csrfToken: token });
+});
+
+app.use('/api', (req, res, next) => {
+    // Enforce origin checks for browsers
+    if (!sameOrigin(req)) return res.status(403).json({ message: 'Bad origin' });
+
+    // Enforce CSRF for state-changing endpoints
+    const method = req.method.toUpperCase();
+    if (['GET', 'HEAD', 'OPTIONS'].includes(method)) return next();
+    if (req.path === '/csrf-token') return next();
+
+    const cookieToken = req.cookies && req.cookies[CSRF_COOKIE];
+    const headerToken = req.headers[CSRF_HEADER];
+    if (!cookieToken || !headerToken || cookieToken !== headerToken) {
+        return res.status(403).json({ message: 'CSRF token missing or invalid' });
+    }
+
+    next();
+});
 
 // Memory-based storage (in production, use a database)
 const users = [];
@@ -46,23 +110,85 @@ const activeUsers = new Map(); // userId -> socketId
 const userRooms = new Map(); // userId -> Set of roomIds
 const roomUsers = new Map(); // roomId -> Set of userIds
 const roomMessages = new Map(); // roomId -> array of messages
+const roomSettings = new Map(); // roomId -> settings snapshot for socket enforcement
 
-// JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+// --- Validation helpers ---
+const validateBody = (schema) => (req, res, next) => {
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+        return res.status(400).json({
+            message: 'Invalid request',
+            errors: parsed.error.issues.map(i => ({ path: i.path.join('.'), message: i.message }))
+        });
+    }
+    req.body = parsed.data;
+    next();
+};
+
+const schemas = {
+    register: z.object({
+        email: z.string().email().max(254),
+        username: z.string().min(2).max(40),
+        password: z.string().min(8).max(128)
+    }),
+    login: z.object({
+        email: z.string().email().max(254),
+        password: z.string().min(1).max(128)
+    }),
+    createRoom: z.object({
+        name: z.string().min(2).max(60),
+        description: z.string().max(240).optional().default('')
+    }),
+    toggle: z.object({
+        enabled: z.boolean().optional(),
+        muted: z.boolean().optional(),
+        disabled: z.boolean().optional(),
+    }),
+    adminUserId: z.object({
+        userId: z.string().min(1).max(128)
+    }),
+};
+
+// JWT Secret (required in production)
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+    console.warn('WARNING: JWT_SECRET is not set. Using an unsafe default secret for development only.');
+}
+const RESOLVED_JWT_SECRET = JWT_SECRET || 'development-insecure-secret';
 
 // Middleware to authenticate token
 const authenticateToken = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+    let token = authHeader && authHeader.split(' ')[1];
+
+    // Fallback to HttpOnly cookie if no Authorization header
+    if (!token && req.cookies && req.cookies.token) {
+        token = req.cookies.token;
+    }
     
     if (!token) return res.status(401).json({ message: 'Authentication required' });
     
-    jwt.verify(token, JWT_SECRET, (err, user) => {
+    jwt.verify(token, RESOLVED_JWT_SECRET, (err, user) => {
         if (err) return res.status(403).json({ message: 'Invalid or expired token' });
         req.user = user;
         next();
     });
 };
+
+// Basic rate limiting (helps against brute-force and abuse)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 20, // 20 requests per 15 minutes
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+const apiLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    max: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+});
 
 // Routes
 // Home route
@@ -76,10 +202,25 @@ app.get('/dashboard', (req, res) => {
 });
 
 // Tracker route
-app.get('/tracker/:roomId', (req, res) => {
+app.get('/tracker/:roomId', async (req, res) => {
     const roomId = req.params.roomId;
+
     // Check if room exists
-    const room = rooms.find(r => r.id === roomId);
+    let room = rooms.find(r => r.id === roomId);
+    if (!room && isMongoConnected()) {
+        const roomDoc = await Room.findOne({ roomId }).lean();
+        if (roomDoc) {
+            room = {
+                id: roomDoc.roomId,
+                name: roomDoc.name,
+                description: roomDoc.description || '',
+                ownerId: roomDoc.ownerId ? roomDoc.ownerId.toString() : null,
+                createdAt: roomDoc.createdAt || new Date(),
+                members: (roomDoc.members || []).map(m => m.toString())
+            };
+            rooms.push(room);
+        }
+    }
     
     if (!room) {
         return res.status(404).render('error', { message: 'Room not found' });
@@ -90,7 +231,7 @@ app.get('/tracker/:roomId', (req, res) => {
 
 // API Routes
 // Register endpoint
-app.post('/api/auth/register', async (req, res) => {
+app.post('/api/auth/register', authLimiter, validateBody(schemas.register), async (req, res) => {
     try {
         const { email, username, password } = req.body;
         
@@ -100,23 +241,46 @@ app.post('/api/auth/register', async (req, res) => {
         }
         
         // Check if user already exists
-        if (users.some(user => user.email === email)) {
-            return res.status(400).json({ message: 'User already exists with this email' });
+        if (isMongoConnected()) {
+            const existing = await User.findOne({ email: String(email).toLowerCase() }).lean();
+            if (existing) {
+                return res.status(400).json({ message: 'User already exists with this email' });
+            }
+        } else {
+            if (users.some(user => user.email === email)) {
+                return res.status(400).json({ message: 'User already exists with this email' });
+            }
         }
         
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
         
         // Create new user
-        const newUser = {
-            id: uuidv4(),
-            email,
-            username,
-            password: hashedPassword,
-            createdAt: new Date()
-        };
-        
-        // Save user
+        let newUser;
+        if (isMongoConnected()) {
+            const userDoc = await User.create({
+                email,
+                username,
+                passwordHash: hashedPassword
+            });
+            newUser = {
+                id: userDoc._id.toString(),
+                email: userDoc.email,
+                username: userDoc.username,
+                password: userDoc.passwordHash,
+                createdAt: userDoc.createdAt || new Date()
+            };
+        } else {
+            newUser = {
+                id: uuidv4(),
+                email,
+                username,
+                password: hashedPassword,
+                createdAt: new Date()
+            };
+        }
+
+        // Save user in memory cache (used by socket layer and some endpoints)
         users.push(newUser);
         
         res.status(201).json({ message: 'User registered successfully' });
@@ -126,13 +290,35 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
+// Logout endpoint (clears auth cookie)
+app.post('/api/auth/logout', (req, res) => {
+    res.clearCookie('token', {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+    });
+    res.json({ message: 'Logged out' });
+});
+
 // Login endpoint
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, validateBody(schemas.login), async (req, res) => {
     try {
         const { email, password } = req.body;
         
         // Find user
-        const user = users.find(u => u.email === email);
+        let user = users.find(u => u.email === email);
+        if (!user && isMongoConnected()) {
+            const userDoc = await User.findOne({ email: String(email).toLowerCase() }).lean();
+            if (userDoc) {
+                user = {
+                    id: userDoc._id.toString(),
+                    email: userDoc.email,
+                    username: userDoc.username,
+                    password: userDoc.passwordHash
+                };
+                users.push(user);
+            }
+        }
         
         if (!user) {
             return res.status(401).json({ message: 'Invalid email or password' });
@@ -148,11 +334,19 @@ app.post('/api/auth/login', async (req, res) => {
         // Create JWT token
         const token = jwt.sign(
             { id: user.id, email: user.email },
-            JWT_SECRET,
-            { expiresIn: '24h' }
+            RESOLVED_JWT_SECRET,
+            { expiresIn: '12h' }
         );
+
+        // Set HttpOnly cookie for auth
+        res.cookie('token', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            maxAge: 12 * 60 * 60 * 1000, // 12 hours
+        });
         
-        // Return user info (excluding password) and token
+        // Return user info (excluding password) and token (for backward compatibility)
         const userResponse = {
             id: user.id,
             email: user.email,
@@ -167,7 +361,7 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // Create room endpoint
-app.post('/api/rooms/create', authenticateToken, (req, res) => {
+app.post('/api/rooms/create', authenticateToken, apiLimiter, validateBody(schemas.createRoom), (req, res) => {
     try {
         const { name, description } = req.body;
         const userId = req.user.id;
@@ -193,17 +387,45 @@ app.post('/api/rooms/create', authenticateToken, (req, res) => {
         } while (rooms.some(r => r.id === roomId));
         
         // Create new room
+        const inviteToken = crypto.randomBytes(18).toString('base64url');
         const newRoom = {
             id: roomId,
             name,
             description: description || '',
             ownerId: userId,
             createdAt: new Date(),
-            members: [userId]
+            members: [userId],
+            inviteToken,
+            bannedUserIds: [],
+            chatMuted: false,
+            locationRequestsDisabled: false,
+            locationHistoryEnabled: false,
         };
         
         // Save room
         rooms.push(newRoom);
+        roomSettings.set(roomId, {
+            inviteToken,
+            bannedUserIds: [],
+            chatMuted: false,
+            locationRequestsDisabled: false,
+            locationHistoryEnabled: false,
+        });
+        if (isMongoConnected()) {
+            // Best-effort persistence; keep API responsive even if Mongo blips.
+            Room.create({
+                roomId: newRoom.id,
+                name: newRoom.name,
+                description: newRoom.description,
+                ownerId: userId,
+                members: [userId],
+                inviteToken,
+                bannedUserIds: [],
+                chatMuted: false,
+                locationRequestsDisabled: false,
+                locationHistoryEnabled: false,
+            }).catch(err => console.error('Mongo room create error:', err));
+        }
         
         // Add room to user's rooms
         if (!userRooms.has(userId)) {
@@ -233,7 +455,7 @@ app.post('/api/rooms/create', authenticateToken, (req, res) => {
 });
 
 // Get rooms endpoint
-app.get('/api/rooms', authenticateToken, (req, res) => {
+app.get('/api/rooms', authenticateToken, apiLimiter, (req, res) => {
     try {
         const userId = req.user.id;
         
@@ -269,7 +491,7 @@ app.get('/api/rooms', authenticateToken, (req, res) => {
 });
 
 // Get room details
-app.get('/api/rooms/:roomId', authenticateToken, (req, res) => {
+app.get('/api/rooms/:roomId', authenticateToken, apiLimiter, (req, res) => {
     try {
         const roomId = req.params.roomId;
         const userId = req.user.id;
@@ -319,8 +541,137 @@ app.get('/api/rooms/:roomId', authenticateToken, (req, res) => {
     }
 });
 
+// Join room endpoint (registered users)
+app.post('/api/rooms/:roomId/join', authenticateToken, apiLimiter, async (req, res) => {
+    try {
+        const roomId = req.params.roomId;
+        const userId = req.user.id;
+
+        const room = rooms.find(r => r.id === roomId);
+        if (!room) return res.status(404).json({ message: 'Room not found' });
+
+        const settings = roomSettings.get(roomId) || {};
+        if (settings.bannedUserIds && settings.bannedUserIds.includes(userId)) {
+            return res.status(403).json({ message: 'You are banned from this room' });
+        }
+
+        if (!room.members.includes(userId)) {
+            room.members.push(userId);
+            if (isMongoConnected()) {
+                Room.updateOne({ roomId }, { $addToSet: { members: userId } })
+                    .catch(err => console.error('Mongo room join error:', err));
+            }
+        }
+
+        if (!userRooms.has(userId)) userRooms.set(userId, new Set());
+        userRooms.get(userId).add(roomId);
+
+        res.json({ message: 'Joined room successfully' });
+    } catch (error) {
+        console.error('Join room error:', error);
+        res.status(500).json({ message: 'Server error while joining room' });
+    }
+});
+
+// Invite link (owner generates)
+app.get('/api/rooms/:roomId/invite', authenticateToken, apiLimiter, async (req, res) => {
+    try {
+        const roomId = req.params.roomId;
+        const userId = req.user.id;
+        const room = rooms.find(r => r.id === roomId);
+        if (!room) return res.status(404).json({ message: 'Room not found' });
+        if (room.ownerId !== userId) return res.status(403).json({ message: 'Only the room owner can create invite links' });
+
+        let settings = roomSettings.get(roomId);
+        if (!settings) {
+            settings = { inviteToken: room.inviteToken || crypto.randomBytes(18).toString('base64url') };
+            roomSettings.set(roomId, settings);
+        }
+        if (!settings.inviteToken) settings.inviteToken = crypto.randomBytes(18).toString('base64url');
+        room.inviteToken = settings.inviteToken;
+
+        if (isMongoConnected()) {
+            Room.updateOne({ roomId }, { $set: { inviteToken: settings.inviteToken } })
+                .catch(err => console.error('Mongo invite token update error:', err));
+        }
+
+        res.json({ inviteUrl: `/invite/${settings.inviteToken}` });
+    } catch (error) {
+        console.error('Invite link error:', error);
+        res.status(500).json({ message: 'Server error while creating invite link' });
+    }
+});
+
+// Invite accept route
+app.get('/invite/:token', async (req, res) => {
+    const token = req.params.token;
+    try {
+        // Find room in memory first
+        let room = rooms.find(r => r.inviteToken === token) || null;
+        if (!room && isMongoConnected()) {
+            const roomDoc = await Room.findOne({ inviteToken: token }).lean();
+            if (roomDoc) {
+                room = {
+                    id: roomDoc.roomId,
+                    name: roomDoc.name,
+                    description: roomDoc.description || '',
+                    ownerId: roomDoc.ownerId ? roomDoc.ownerId.toString() : null,
+                    createdAt: roomDoc.createdAt || new Date(),
+                    members: (roomDoc.members || []).map(m => m.toString()),
+                    inviteToken: roomDoc.inviteToken,
+                    bannedUserIds: (roomDoc.bannedUserIds || []).map(x => x.toString()),
+                    chatMuted: !!roomDoc.chatMuted,
+                    locationRequestsDisabled: !!roomDoc.locationRequestsDisabled,
+                    locationHistoryEnabled: !!roomDoc.locationHistoryEnabled,
+                };
+                rooms.push(room);
+                roomSettings.set(room.id, {
+                    inviteToken: room.inviteToken,
+                    bannedUserIds: room.bannedUserIds || [],
+                    chatMuted: !!room.chatMuted,
+                    locationRequestsDisabled: !!room.locationRequestsDisabled,
+                    locationHistoryEnabled: !!room.locationHistoryEnabled,
+                });
+            }
+        }
+
+        if (!room) return res.status(404).render('error', { message: 'Invite link not found' });
+
+        // If logged in, add to room and redirect to tracker
+        const tokenCookie = req.cookies && req.cookies.token;
+        if (tokenCookie) {
+            try {
+                const user = jwt.verify(tokenCookie, RESOLVED_JWT_SECRET);
+                const userId = user.id;
+                const settings = roomSettings.get(room.id) || {};
+                if (settings.bannedUserIds && settings.bannedUserIds.includes(userId)) {
+                    return res.status(403).render('error', { message: 'You are banned from this room' });
+                }
+                if (!room.members.includes(userId)) {
+                    room.members.push(userId);
+                    if (isMongoConnected()) {
+                        Room.updateOne({ roomId: room.id }, { $addToSet: { members: userId } })
+                            .catch(err => console.error('Mongo invite join error:', err));
+                    }
+                }
+                if (!userRooms.has(userId)) userRooms.set(userId, new Set());
+                userRooms.get(userId).add(room.id);
+                return res.redirect(`/tracker/${room.id}`);
+            } catch {
+                // fall through to login page redirect
+            }
+        }
+
+        // Not logged in: send to home with roomId prefilled
+        return res.redirect(`/?roomId=${room.id}`);
+    } catch (err) {
+        console.error('Invite accept error:', err);
+        return res.status(500).render('error', { message: 'Server error while processing invite' });
+    }
+});
+
 // Delete room endpoint
-app.delete('/api/rooms/:roomId', authenticateToken, (req, res) => {
+app.delete('/api/rooms/:roomId', authenticateToken, apiLimiter, (req, res) => {
     try {
         const roomId = req.params.roomId;
         const userId = req.user.id;
@@ -347,9 +698,13 @@ app.delete('/api/rooms/:roomId', authenticateToken, (req, res) => {
         // Remove room from roomUsers and roomMessages
         roomUsers.delete(roomId);
         roomMessages.delete(roomId);
+        roomSettings.delete(roomId);
         
         // Remove room
         rooms.splice(roomIndex, 1);
+        if (isMongoConnected()) {
+            Room.deleteOne({ roomId }).catch(err => console.error('Mongo room delete error:', err));
+        }
         
         res.json({ message: 'Room deleted successfully' });
     } catch (error) {
@@ -359,7 +714,7 @@ app.delete('/api/rooms/:roomId', authenticateToken, (req, res) => {
 });
 
 // Leave room endpoint
-app.post('/api/rooms/:roomId/leave', authenticateToken, (req, res) => {
+app.post('/api/rooms/:roomId/leave', authenticateToken, apiLimiter, (req, res) => {
     try {
         const roomId = req.params.roomId;
         const userId = req.user.id;
@@ -383,6 +738,10 @@ app.post('/api/rooms/:roomId/leave', authenticateToken, (req, res) => {
         
         // Remove user from room members
         room.members = room.members.filter(id => id !== userId);
+        if (isMongoConnected()) {
+            Room.updateOne({ roomId }, { $pull: { members: userId } })
+                .catch(err => console.error('Mongo room leave error:', err));
+        }
         
         // Remove room from user's rooms
         if (userRooms.has(userId)) {
@@ -401,6 +760,135 @@ app.post('/api/rooms/:roomId/leave', authenticateToken, (req, res) => {
     }
 });
 
+// --- Admin controls (owner only) ---
+const requireOwner = (req, res, next) => {
+    const roomId = req.params.roomId;
+    const room = rooms.find(r => r.id === roomId);
+    if (!room) return res.status(404).json({ message: 'Room not found' });
+    if (room.ownerId !== req.user.id) return res.status(403).json({ message: 'Only the room owner can perform this action' });
+    req.room = room;
+    next();
+};
+
+app.post('/api/rooms/:roomId/admin/mute-chat', authenticateToken, apiLimiter, requireOwner, validateBody(schemas.toggle), async (req, res) => {
+    const roomId = req.params.roomId;
+    const muted = Boolean(req.body.muted);
+    const settings = roomSettings.get(roomId) || {};
+    settings.chatMuted = muted;
+    roomSettings.set(roomId, settings);
+    req.room.chatMuted = muted;
+    if (isMongoConnected()) {
+        Room.updateOne({ roomId }, { $set: { chatMuted: muted } }).catch(err => console.error('Mongo mute-chat error:', err));
+    }
+    res.json({ message: 'Updated', chatMuted: muted });
+});
+
+app.post('/api/rooms/:roomId/admin/disable-location-requests', authenticateToken, apiLimiter, requireOwner, validateBody(schemas.toggle), async (req, res) => {
+    const roomId = req.params.roomId;
+    const disabled = Boolean(req.body.disabled);
+    const settings = roomSettings.get(roomId) || {};
+    settings.locationRequestsDisabled = disabled;
+    roomSettings.set(roomId, settings);
+    req.room.locationRequestsDisabled = disabled;
+    if (isMongoConnected()) {
+        Room.updateOne({ roomId }, { $set: { locationRequestsDisabled: disabled } }).catch(err => console.error('Mongo disable-location-requests error:', err));
+    }
+    res.json({ message: 'Updated', locationRequestsDisabled: disabled });
+});
+
+app.post('/api/rooms/:roomId/admin/location-history', authenticateToken, apiLimiter, requireOwner, validateBody(schemas.toggle), async (req, res) => {
+    const roomId = req.params.roomId;
+    const enabled = Boolean(req.body.enabled);
+    const settings = roomSettings.get(roomId) || {};
+    settings.locationHistoryEnabled = enabled;
+    roomSettings.set(roomId, settings);
+    req.room.locationHistoryEnabled = enabled;
+    if (isMongoConnected()) {
+        Room.updateOne({ roomId }, { $set: { locationHistoryEnabled: enabled } }).catch(err => console.error('Mongo location-history setting error:', err));
+    }
+    res.json({ message: 'Updated', locationHistoryEnabled: enabled });
+});
+
+app.post('/api/rooms/:roomId/admin/ban', authenticateToken, apiLimiter, requireOwner, validateBody(schemas.adminUserId), async (req, res) => {
+    const roomId = req.params.roomId;
+    const targetUserId = req.body.userId;
+    const settings = roomSettings.get(roomId) || { bannedUserIds: [] };
+    settings.bannedUserIds = settings.bannedUserIds || [];
+    if (!settings.bannedUserIds.includes(targetUserId)) settings.bannedUserIds.push(targetUserId);
+    roomSettings.set(roomId, settings);
+    req.room.bannedUserIds = settings.bannedUserIds;
+
+    // Also remove from members
+    req.room.members = (req.room.members || []).filter(id => id !== targetUserId);
+    if (userRooms.has(targetUserId)) userRooms.get(targetUserId).delete(roomId);
+
+    if (isMongoConnected()) {
+        Room.updateOne(
+            { roomId },
+            { $addToSet: { bannedUserIds: targetUserId }, $pull: { members: targetUserId } }
+        ).catch(err => console.error('Mongo ban error:', err));
+    }
+
+    // Kick if currently connected
+    const socketId = activeUsers.get(targetUserId);
+    if (socketId) {
+        const s = io.sockets.sockets.get(socketId);
+        if (s) {
+            s.emit('kicked', { roomId, reason: 'banned' });
+            s.leave(roomId);
+        }
+    }
+
+    res.json({ message: 'User banned' });
+});
+
+app.post('/api/rooms/:roomId/admin/kick', authenticateToken, apiLimiter, requireOwner, validateBody(schemas.adminUserId), async (req, res) => {
+    const roomId = req.params.roomId;
+    const targetUserId = req.body.userId;
+
+    // remove from roomUsers map (online list)
+    if (roomUsers.has(roomId)) roomUsers.get(roomId).delete(targetUserId);
+
+    // kick socket if active
+    const socketId = activeUsers.get(targetUserId);
+    if (socketId) {
+        const s = io.sockets.sockets.get(socketId);
+        if (s) {
+            s.emit('kicked', { roomId, reason: 'kicked' });
+            s.leave(roomId);
+        }
+    }
+
+    res.json({ message: 'User kicked (online users only)' });
+});
+
+// Location history API (registered users)
+app.get('/api/rooms/:roomId/location-history', authenticateToken, apiLimiter, async (req, res) => {
+    try {
+        const roomId = req.params.roomId;
+        const userId = req.user.id;
+        const room = rooms.find(r => r.id === roomId);
+        if (!room) return res.status(404).json({ message: 'Room not found' });
+        if (!room.members.includes(userId)) return res.status(403).json({ message: 'You are not a member of this room' });
+
+        const settings = roomSettings.get(roomId) || {};
+        if (!settings.locationHistoryEnabled) return res.json({ roomId, enabled: false, points: [] });
+        if (!isMongoConnected()) return res.json({ roomId, enabled: true, points: [] });
+
+        const limit = Math.min(parseInt(req.query.limit || '200', 10) || 200, 1000);
+        const since = req.query.since ? new Date(String(req.query.since)) : null;
+
+        const query = { roomId };
+        if (since && !Number.isNaN(since.getTime())) query.timestamp = { $gte: since };
+
+        const docs = await LocationPing.find(query).sort({ timestamp: 1 }).limit(limit).lean();
+        res.json({ roomId, enabled: true, points: docs });
+    } catch (err) {
+        console.error('Location history fetch error:', err);
+        res.status(500).json({ message: 'Server error while fetching location history' });
+    }
+});
+
 // Create HTTP server
 const server = http.createServer(app);
 
@@ -410,11 +898,24 @@ const io = socketIo(server);
 // Socket.io connection handler
 io.on('connection', (socket) => {
     console.log('New client connected');
+
+    const isInRoom = (roomId) => socket.rooms.has(roomId);
     
     // Join room
     socket.on('join-room', (data) => {
-        const { userId, username, roomId, isGuest } = data;
+        const { userId, username, roomId, isGuest } = data || {};
+
+        if (!roomId || !userId || !username) {
+            return;
+        }
         
+        // Enforce bans for registered users
+        const settings = roomSettings.get(roomId) || {};
+        if (!isGuest && settings.bannedUserIds && settings.bannedUserIds.includes(userId)) {
+            socket.emit('kicked', { roomId, reason: 'banned' });
+            return;
+        }
+
         console.log(`User ${username} (${isGuest ? 'Guest' : 'Registered'}) joined room ${roomId}`);
         
         // Add user to socket room
@@ -514,7 +1015,7 @@ io.on('connection', (socket) => {
         }
         
         // Store user data in socket for later reference
-        socket.data = { userId, username, isGuest };
+        socket.data = { userId, username, isGuest, roomId };
         
         // Emit the online users list to all clients in the room
         io.to(roomId).emit('online-users', onlineUsers);
@@ -534,9 +1035,13 @@ io.on('connection', (socket) => {
     
     // Send location
     socket.on('send-location', (data) => {
-        const { userId, username, roomId, latitude, longitude, accuracy, isGuest } = data;
-        
-        // Broadcast location to all users in the room without any permission checks
+        const { userId, username, roomId, latitude, longitude, accuracy, isGuest } = data || {};
+
+        // Basic validation
+        if (!roomId || !isInRoom(roomId)) return;
+        if (!socket.data || socket.data.userId !== userId) return;
+
+        // Broadcast location to all users in the room
         io.to(roomId).emit('receive-location', {
             userId,
             username,
@@ -545,13 +1050,43 @@ io.on('connection', (socket) => {
             accuracy,
             isGuest
         });
+
+        // Optional location history (registered users only)
+        const settings = roomSettings.get(roomId) || {};
+        if (!isGuest && settings.locationHistoryEnabled && isMongoConnected()) {
+            const doc = {
+                roomId,
+                userId,
+                latitude: Number(latitude),
+                longitude: Number(longitude),
+                accuracy: accuracy != null ? Number(accuracy) : null,
+                timestamp: new Date()
+            };
+            LocationPing.create(doc)
+                .then(async () => {
+                    // cap to last 500 points per user per room
+                    const count = await LocationPing.countDocuments({ roomId, userId });
+                    if (count > 500) {
+                        const toDelete = count - 500;
+                        const old = await LocationPing.find({ roomId, userId }).sort({ timestamp: 1 }).limit(toDelete).select({ _id: 1 }).lean();
+                        if (old.length) {
+                            await LocationPing.deleteMany({ _id: { $in: old.map(o => o._id) } });
+                        }
+                    }
+                })
+                .catch(err => console.error('Location history write error:', err));
+        }
     });
 
     // Request location from a specific user
     socket.on('request-location', (data) => {
-        const { targetUserId, roomId } = data;
-        
-        // Allow any user to request location from any other user in the same room
+        const { targetUserId, roomId } = data || {};
+
+        if (!roomId || !targetUserId || !isInRoom(roomId)) return;
+        const settings = roomSettings.get(roomId) || {};
+        const isOwner = settings && socket.data && rooms.find(r => r.id === roomId)?.ownerId === socket.data.userId;
+        if (settings.locationRequestsDisabled && !isOwner) return;
+
         // Find the socket for the target user
         const targetSocketId = activeUsers.get(targetUserId);
         if (targetSocketId) {
@@ -577,13 +1112,23 @@ io.on('connection', (socket) => {
 
     // Send message
     socket.on('send-message', (data) => {
-        const { userId, username, roomId, message, timestamp, isGuest } = data;
-        
+        const { userId, username, roomId, message, timestamp, isGuest } = data || {};
+
+        if (!roomId || !message || !isInRoom(roomId)) return;
+        if (!socket.data || socket.data.userId !== userId) return;
+
+        const settings = roomSettings.get(roomId) || {};
+        const isOwner = settings && rooms.find(r => r.id === roomId)?.ownerId === userId;
+        if (settings.chatMuted && !isOwner) return;
+
+        const cleanedMessage = sanitizeHtml(String(message), { allowedTags: [], allowedAttributes: {} }).trim().slice(0, 500);
+        if (!cleanedMessage) return;
+
         // Create message object
         const messageObj = {
             userId,
             username,
-            message,
+            message: cleanedMessage,
             timestamp,
             isGuest
         };
@@ -707,19 +1252,69 @@ io.on('connection', (socket) => {
 });
 
 // Start server with error handling
-server.listen(PORT, HOST, () => {
-    console.log(`Server running on ${HOST}:${PORT}`);
-}).on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        const newPort = parseInt(PORT) + 1;
-        console.error(`Port ${PORT} is already in use. Trying port ${newPort}...`);
-        server.listen(newPort, HOST, () => {
-            console.log(`Server running on ${HOST}:${newPort}`);
+const start = async () => {
+    try {
+        if (isMongoConfigured()) {
+            try {
+                await connectMongo();
+                console.log('MongoDB connected');
+
+                // Warm in-memory caches used by existing socket logic
+                const [userDocs, roomDocs] = await Promise.all([
+                    User.find({}).lean(),
+                    Room.find({}).lean()
+                ]);
+
+                users.length = 0;
+                rooms.length = 0;
+
+                for (const u of userDocs) {
+                    users.push({
+                        id: u._id.toString(),
+                        email: u.email,
+                        username: u.username,
+                        password: u.passwordHash,
+                        createdAt: u.createdAt || new Date()
+                    });
+                }
+
+                for (const r of roomDocs) {
+                    rooms.push({
+                        id: r.roomId,
+                        name: r.name,
+                        description: r.description || '',
+                        ownerId: r.ownerId ? r.ownerId.toString() : null,
+                        createdAt: r.createdAt || new Date(),
+                        members: (r.members || []).map(m => m.toString())
+                    });
+                }
+            } catch (mongoErr) {
+                console.error('MongoDB connection failed; continuing with in-memory storage:', mongoErr.message || mongoErr);
+            }
+        } else {
+            console.log('MongoDB disabled (no MONGODB_URI set)');
+        }
+
+        server.listen(PORT, HOST, () => {
+            console.log(`Server running on ${HOST}:${PORT}`);
+        }).on('error', (err) => {
+            if (err.code === 'EADDRINUSE') {
+                const newPort = parseInt(PORT) + 1;
+                console.error(`Port ${PORT} is already in use. Trying port ${newPort}...`);
+                server.listen(newPort, HOST, () => {
+                    console.log(`Server running on ${HOST}:${newPort}`);
+                });
+            } else {
+                console.error('Server error:', err);
+            }
         });
-    } else {
-        console.error('Server error:', err);
+    } catch (err) {
+        console.error('Startup error:', err);
+        process.exit(1);
     }
-});
+};
+
+start();
 
 // Set increased timeout values to prevent connection reset issues
 server.keepAliveTimeout = 120000; // 120 seconds

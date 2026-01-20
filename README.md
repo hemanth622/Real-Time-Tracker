@@ -36,6 +36,26 @@ A modern real-time location tracking application with user accounts, room-based 
 - **Authentication**: JWT, bcrypt
 - **Templating**: EJS
 
+## MongoDB (optional persistence)
+
+By default, this app uses **in-memory storage** for users/rooms (so restarting the server wipes data).  
+If you provide a Mongo connection string, the app will **connect to MongoDB and persist users + rooms**.
+
+### Environment variables
+
+- **`MONGODB_URI`**: MongoDB connection string (enables MongoDB persistence when set)
+- **`JWT_SECRET`**: secret used to sign JWT tokens (recommended to set in production)
+- **`PORT`**: server port (optional)
+
+### Local setup (Mongo enabled)
+
+Create a `.env` file in the project root:
+
+```env
+MONGODB_URI=mongodb://127.0.0.1:27017/real_time_tracker
+JWT_SECRET=change-me
+```
+
 ## License
 
 This project is licensed under the ISC License. 

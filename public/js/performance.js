@@ -31,8 +31,8 @@ document.addEventListener('DOMContentLoaded', function() {
         return;
       }
       
-      const token = localStorage.getItem('token');
-      if (!token) {
+      const user = JSON.parse(localStorage.getItem('user') || 'null');
+      if (!user || !user.id) {
         window.location.href = '/';
         return;
       }
@@ -48,7 +48,6 @@ document.addEventListener('DOMContentLoaded', function() {
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/rooms/create', true);
       xhr.setRequestHeader('Content-Type', 'application/json');
-      xhr.setRequestHeader('Authorization', `Bearer ${token}`);
       
       xhr.onload = function() {
         if (xhr.status >= 200 && xhr.status < 300) {
@@ -149,9 +148,10 @@ document.addEventListener('DOMContentLoaded', function() {
   const logoutBtn = document.getElementById('logout-btn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', function() {
-      localStorage.removeItem('token');
       localStorage.removeItem('user');
-      window.location.href = '/';
+      fetch('/api/auth/logout', { method: 'POST' }).finally(() => {
+        window.location.href = '/';
+      });
     });
   }
   

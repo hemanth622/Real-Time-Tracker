@@ -20,11 +20,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         noJoinedRoomsMessage: document.getElementById('no-joined-rooms-message')
     };
 
-    // Check if user is logged in
-    const token = localStorage.getItem('token');
-    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    // Check if user is logged in (user stored in localStorage, JWT in HttpOnly cookie)
+    const user = JSON.parse(localStorage.getItem('user') || 'null');
     
-    if (!token || !user) {
+    if (!user || !user.id) {
         // Redirect to login page if not logged in
         window.location.href = '/';
         return;
@@ -40,9 +39,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Fix logout functionality - Direct implementation
     function handleLogout() {
-        localStorage.removeItem('token');
         localStorage.removeItem('user');
-        window.location.href = '/';
+        // Also clear HttpOnly cookie on server
+        fetch('/api/auth/logout', { method: 'POST' }).finally(() => {
+            window.location.href = '/';
+        });
     }
     
     // Add logout handler
@@ -53,11 +54,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Fetch rooms
     async function fetchRooms() {
         try {
-            const response = await fetch('/api/rooms', {
-                headers: {
-                    'Authorization': `Bearer ${token}`
-                }
-            });
+            const response = await fetch('/api/rooms');
             
             if (!response.ok) {
                 throw new Error('Failed to fetch rooms');
@@ -173,10 +170,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (confirm(`Are you sure you want to delete room "${room.name}"?`)) {
                     try {
                         const response = await fetch(`/api/rooms/${room.id}`, {
-                            method: 'DELETE',
-                            headers: {
-                                'Authorization': `Bearer ${token}`
-                            }
+                            method: 'DELETE'
                         });
                         
                         if (response.ok) {
@@ -198,6 +192,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             });
             roomActions.appendChild(deleteBtn);
+
+            const inviteBtn = document.createElement('button');
+            inviteBtn.className = 'btn btn-sm btn-outline-secondary ms-2';
+            inviteBtn.innerHTML = '<i class="bi bi-link-45deg me-1"></i>Invite Link';
+            inviteBtn.addEventListener('click', async () => {
+                try {
+                    const res = await fetch(`/api/rooms/${room.id}/invite`);
+                    const data = await res.json();
+                    if (!res.ok) {
+                        alert(data.message || 'Failed to create invite link');
+                        return;
+                    }
+                    const fullUrl = `${window.location.origin}${data.inviteUrl}`;
+                    await navigator.clipboard.writeText(fullUrl);
+                    alert('Invite link copied to clipboard!');
+                } catch (err) {
+                    console.error('Invite link error:', err);
+                    alert('Failed to create invite link');
+                }
+            });
+            roomActions.appendChild(inviteBtn);
         }
         
         roomDiv.appendChild(roomActions);
@@ -231,11 +246,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             try {
                 // First try to fetch room details to verify it exists
-                const checkResponse = await fetch(`/api/rooms/${roomId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
+                const checkResponse = await fetch(`/api/rooms/${roomId}`);
                 
                 if (checkResponse.ok) {
                     // Room exists and user has access, redirect to tracker
@@ -248,7 +259,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     const joinResponse = await fetch(`/api/rooms/${roomId}/join`, {
                         method: 'POST',
                         headers: {
-                            'Authorization': `Bearer ${token}`,
                             'Content-Type': 'application/json'
                         }
                     });

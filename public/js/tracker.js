@@ -35,10 +35,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             el.style.display = 'none';
         });
     } else {
-        const token = localStorage.getItem('token');
-        user = JSON.parse(localStorage.getItem('user') || '{}');
+        user = JSON.parse(localStorage.getItem('user') || 'null');
         
-        if (!token || !user) {
+        if (!user || !user.id) {
             window.location.href = `/?roomId=${roomId}`;
             return;
         }
@@ -94,7 +93,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         centerMapBtn: document.getElementById('center-map-btn'),
         chatMessages: document.getElementById('chat-messages'),
         chatForm: document.getElementById('chat-form'),
-        chatInput: document.getElementById('chat-input')
+        chatInput: document.getElementById('chat-input'),
+        replayBtn: document.getElementById('replay-btn')
     };
     
     try {
@@ -105,12 +105,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Only fetch room details for registered users
         if (!isGuest) {
             try {
-                const token = localStorage.getItem('token');
-                const roomResponse = await fetch(`/api/rooms/${roomId}`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
+                const roomResponse = await fetch(`/api/rooms/${roomId}`);
                 
                 if (roomResponse.ok) {
                     const roomData = await roomResponse.json();
@@ -652,18 +647,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }, 60000); // Every minute
         
-        // Receive location updates for other users
-        socket.on('receive-location', (data) => {
+        function processLocationUpdate(data) {
             try {
                 if (!data || !data.userId || !data.username) {
                     console.error('Invalid location data received:', data);
                     return;
                 }
-                
+
                 const { userId, username, latitude, longitude, accuracy, isGuest } = data;
-                
-                // Always process location updates for all users, regardless of who is the room owner
-                
+
                 // Update map view if this is our own location
                 if (userId === user.id) {
                     if (accuracy) {
@@ -676,30 +668,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                             elements.locationAccuracy.className = 'badge bg-danger';
                         }
                     }
-                    
+
                     // Set map view to our location with appropriate zoom level based on accuracy
                     let zoomLevel = 16;
                     if (accuracy > 5000) zoomLevel = 10;
                     else if (accuracy > 1000) zoomLevel = 12;
                     else if (accuracy > 500) zoomLevel = 14;
-                    
+
                     map.setView([latitude, longitude], zoomLevel);
                 }
-                
+
                 // Get or generate color for user
                 const color = getRandomColor(userId);
-                
+
                 // Create or update marker
                 if (markers[userId]) {
-                    // Update existing marker position
                     markers[userId].setLatLng([latitude, longitude]);
-                    
-                    // Make sure the marker is visible on the map
+
                     if (!map.hasLayer(markers[userId])) {
                         markers[userId].addTo(map);
                     }
-                    
-                    // Ensure popup content is up to date
+
                     const popup = markers[userId].getPopup();
                     if (popup) {
                         popup.setContent(`<b>${username}</b>${isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
@@ -707,15 +696,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         markers[userId].bindPopup(`<b>${username}</b>${isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
                     }
                 } else {
-                    // Create new marker
                     try {
                         const icon = createCustomIcon(color, username, isGuest);
                         markers[userId] = L.marker([latitude, longitude], { icon }).addTo(map);
-                        
-                        // Add popup with user info
                         markers[userId].bindPopup(`<b>${username}</b>${isGuest ? ' (Guest)' : ''}<br>Last updated: <span class="last-update">just now</span>`);
-                        
-                        // Update last update time every minute
+
                         setInterval(() => {
                             try {
                                 const popup = markers[userId] && markers[userId].getPopup();
@@ -723,10 +708,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                                     const lastUpdate = new Date(markers[userId].lastUpdate || Date.now());
                                     const minutes = Math.floor((Date.now() - lastUpdate) / 60000);
                                     const timeText = minutes < 1 ? 'just now' : `${minutes} min ago`;
-                                    
+
                                     const content = popup.getContent().replace(/<span class="last-update">.*?<\/span>/, `<span class="last-update">${timeText}</span>`);
                                     popup.setContent(content);
-                                    
+
                                     if (popup.isOpen()) {
                                         popup.update();
                                     }
@@ -739,15 +724,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                         console.error('Error creating marker:', err, data);
                     }
                 }
-                
-                // Store last update time
+
                 if (markers[userId]) {
                     markers[userId].lastUpdate = Date.now();
                 }
             } catch (err) {
                 console.error('Error processing location update:', err);
             }
-        });
+        }
+
+        // Receive location updates for other users
+        socket.on('receive-location', (data) => processLocationUpdate(data));
         
         // Handle user disconnection
         socket.on('user-disconnected', (userId) => {
@@ -905,6 +892,56 @@ document.addEventListener('DOMContentLoaded', async () => {
                 window.location.href = isGuest ? "/" : "/dashboard";
             }
         });
+
+        // Replay history (registered users only, opt-in by room owner)
+        if (!isGuest && elements.replayBtn) {
+            elements.replayBtn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                try {
+                    const res = await fetch(`/api/rooms/${roomId}/location-history?limit=500`);
+                    const data = await res.json();
+                    if (!data.enabled) {
+                        alert('Location history is disabled for this room.');
+                        return;
+                    }
+                    const points = Array.isArray(data.points) ? data.points : [];
+                    if (!points.length) {
+                        alert('No history available yet.');
+                        return;
+                    }
+
+                    // Group points by userId
+                    const byUser = new Map();
+                    for (const p of points) {
+                        if (!p || !p.userId) continue;
+                        if (!byUser.has(p.userId)) byUser.set(p.userId, []);
+                        byUser.get(p.userId).push(p);
+                    }
+
+                    // Simple playback: iterate through timeline and update markers
+                    const timeline = points
+                        .map(p => ({ ...p, _t: new Date(p.timestamp).getTime() }))
+                        .filter(p => !Number.isNaN(p._t))
+                        .sort((a, b) => a._t - b._t);
+
+                    let i = 0;
+                    const speedMs = 200; // fast replay
+                    const timer = setInterval(() => {
+                        const p = timeline[i++];
+                        if (!p) {
+                            clearInterval(timer);
+                            return;
+                        }
+                        processLocationUpdate(p);
+                    }, speedMs);
+
+                    alert('Replaying history (fast mode)...');
+                } catch (err) {
+                    console.error('Replay error:', err);
+                    alert('Failed to replay history.');
+                }
+            });
+        }
         
     } catch (error) {
         console.error("Error in tracker:", error);
